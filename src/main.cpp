@@ -2,6 +2,8 @@
 #include "HX711.h"
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
+#include <WiFi.h>
+#include <WiFiUdp.h>
 
 // HX711 circuit wiring
 const int LOADCELL_DOUT_PIN = 25;
@@ -21,6 +23,17 @@ Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET_PIN);
 HX711 scale;
 
 float calibration_factor = -1820; // This value is obtained by calibration
+
+// WiFi and UDP settings
+const char* WIFI_SSID     = "UPB_RoboSub";      // TODO: set your WiFi SSID
+const char* WIFI_PASSWORD = "amasd2025";  // TODO: set your WiFi password
+
+// Remote host for UDP monitoring (PC or server IP)
+const char* UDP_REMOTE_IP = "10.38.24.100";  // TODO: set receiver IP
+const uint16_t UDP_REMOTE_PORT = 5005;         // TODO: set receiver port
+const uint16_t UDP_LOCAL_PORT  = 4210;         // Local UDP port (can be arbitrary)
+
+WiFiUDP udp;
 
 // Non-blocking blink state
 unsigned long previousBlinkMillis = 0;
@@ -59,6 +72,39 @@ void setup() {
   long zero_factor = scale.read_average(); //Get a baseline reading
   Serial.print("Zero factor: "); //This can be used to remove the need to tare the scale. Useful in permanent scale projects.
   Serial.println(zero_factor);
+
+  // Connect to WiFi
+  Serial.println();
+  Serial.print("Connecting to WiFi SSID: ");
+  Serial.println(WIFI_SSID);
+
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+
+  unsigned long wifiStart = millis();
+  const unsigned long wifiTimeoutMs = 20000; // 20s timeout
+
+  while (WiFi.status() != WL_CONNECTED && (millis() - wifiStart) < wifiTimeoutMs) {
+    delay(250);
+    Serial.print(".");
+  }
+
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println();
+    Serial.print("WiFi connected, IP address: ");
+    Serial.println(WiFi.localIP());
+
+    // Start UDP
+    if (udp.begin(UDP_LOCAL_PORT)) {
+      Serial.print("UDP started on port ");
+      Serial.println(UDP_LOCAL_PORT);
+    } else {
+      Serial.println("Failed to start UDP");
+    }
+  } else {
+    Serial.println();
+    Serial.println("WiFi connection failed or timed out");
+  }
 }
 
 void loop() {
@@ -87,11 +133,33 @@ void loop() {
   display.setTextColor(SSD1306_WHITE);
   display.setCursor(0, 0);
   display.println("HX711 Scale");
+
+  // Second line: WiFi connection status and IP
+  display.setCursor(0, 8);
+  if (WiFi.status() == WL_CONNECTED) {
+    display.print("WiFi ");
+    display.print(WiFi.localIP());
+  } else {
+    display.print("WiFi DISCONNECTED");
+  }
+
+  // Weight on third line, larger font
   display.setTextSize(2);
-  display.setCursor(0, 12);
+  display.setCursor(0, 16);
   display.print(weight, 1);
   display.print(" g");
   display.display();
+
+  // Send measurement over UDP: "<millis>,<weight>"
+  if (WiFi.status() == WL_CONNECTED) {
+    unsigned long timestampMs = millis();
+    char payload[64];
+    snprintf(payload, sizeof(payload), "%lu,%.2f", timestampMs, weight);
+
+    udp.beginPacket(UDP_REMOTE_IP, UDP_REMOTE_PORT);
+    udp.write((uint8_t*)payload, strlen(payload));
+    udp.endPacket();
+  }
 
   if(Serial.available())
   {
