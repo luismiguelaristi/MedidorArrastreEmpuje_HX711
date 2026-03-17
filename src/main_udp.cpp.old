@@ -1,0 +1,183 @@
+#include <Arduino.h>
+#include "HX711.h"
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+#include <WiFi.h>
+#include <WiFiUdp.h>
+
+// HX711 circuit wiring
+const int LOADCELL_DOUT_PIN = 25;
+const int LOADCELL_SCK_PIN = 26;
+
+// Firebeetle ESP32 built-in LED is on GPIO 2
+const int STATUS_LED_PIN = 2;
+
+// OLED 0.91" (128x32) I2C display
+const int SCREEN_WIDTH = 128;
+const int SCREEN_HEIGHT = 32;
+const int OLED_RESET_PIN = -1;   // Reset pin (or -1 if sharing ESP32 reset)
+const uint8_t OLED_I2C_ADDRESS = 0x3C;
+
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET_PIN);
+
+HX711 scale;
+
+float calibration_factor = -1820; // This value is obtained by calibration
+
+// WiFi and UDP settings
+const char* WIFI_SSID     = "UPB_RoboSub";      // TODO: set your WiFi SSID
+const char* WIFI_PASSWORD = "amasd2025";  // TODO: set your WiFi password
+
+// UDP ports (broadcast within local subnet)
+const uint16_t UDP_REMOTE_PORT = 5005;         // Port receivers listen on
+const uint16_t UDP_LOCAL_PORT  = 4210;         // Local UDP port (can be arbitrary)
+
+WiFiUDP udp;
+IPAddress udpBroadcastIp;
+
+// Non-blocking blink state
+unsigned long previousBlinkMillis = 0;
+const unsigned long blinkIntervalMs = 500;
+bool statusLedState = false;
+
+void setup() {
+  Serial.begin(115200);
+  Serial.println("HX711 calibration sketch");
+  Serial.println("Remove all weight from scale");
+  Serial.println("After readings begin, place known weight on scale");
+  Serial.println("Press + or a to increase calibration factor");
+  Serial.println("Press - or z to decrease calibration factor");
+  Serial.println("Press t or T to tare");
+
+  pinMode(STATUS_LED_PIN, OUTPUT);
+  digitalWrite(STATUS_LED_PIN, LOW);
+
+  // Initialize OLED display over I2C
+  if (!display.begin(SSD1306_SWITCHCAPVCC, OLED_I2C_ADDRESS)) {
+    Serial.println("SSD1306 allocation failed");
+  } else {
+    display.clearDisplay();
+    display.setTextSize(1);
+    display.setTextColor(SSD1306_WHITE);
+    display.setCursor(0, 0);
+    display.println("HX711 Scale");
+    display.println("Init...");
+    display.display();
+  }
+
+  scale.begin(LOADCELL_DOUT_PIN, LOADCELL_SCK_PIN);
+  scale.set_scale();
+  scale.tare(); //Reset the scale to 0
+
+  long zero_factor = scale.read_average(); //Get a baseline reading
+  Serial.print("Zero factor: "); //This can be used to remove the need to tare the scale. Useful in permanent scale projects.
+  Serial.println(zero_factor);
+
+  // Connect to WiFi
+  Serial.println();
+  Serial.print("Connecting to WiFi SSID: ");
+  Serial.println(WIFI_SSID);
+
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+
+  unsigned long wifiStart = millis();
+  const unsigned long wifiTimeoutMs = 20000; // 20s timeout
+
+  while (WiFi.status() != WL_CONNECTED && (millis() - wifiStart) < wifiTimeoutMs) {
+    delay(250);
+    Serial.print(".");
+  }
+
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println();
+    Serial.print("WiFi connected, IP address: ");
+    Serial.println(WiFi.localIP());
+
+    // Compute subnet broadcast address for UDP broadcast
+    IPAddress ip = WiFi.localIP();
+    IPAddress subnet = WiFi.subnetMask();
+    for (int i = 0; i < 4; i++) {
+      udpBroadcastIp[i] = (ip[i] & subnet[i]) | (~subnet[i] & 0xFF);
+    }
+    Serial.print("UDP broadcast IP: ");
+    Serial.println(udpBroadcastIp);
+
+    // Start UDP
+    if (udp.begin(UDP_LOCAL_PORT)) {
+      Serial.print("UDP started on port ");
+      Serial.println(UDP_LOCAL_PORT);
+    } else {
+      Serial.println("Failed to start UDP");
+    }
+  } else {
+    Serial.println();
+    Serial.println("WiFi connection failed or timed out");
+  }
+}
+
+void loop() {
+  // Non-blocking status LED blink
+  unsigned long currentMillis = millis();
+  if (currentMillis - previousBlinkMillis >= blinkIntervalMs) {
+    previousBlinkMillis = currentMillis;
+    statusLedState = !statusLedState;
+    digitalWrite(STATUS_LED_PIN, statusLedState ? HIGH : LOW);
+  }
+
+  scale.set_scale(calibration_factor); //Adjust to this calibration factor
+
+  float weight = scale.get_units(5); // average of 5 readings
+
+  Serial.print("Reading: ");
+  Serial.print(weight, 1);
+  Serial.print(" g"); //Change this to kg and re-adjust the calibration factor if you follow SI units.
+  Serial.print(" calibration_factor: ");
+  Serial.print(calibration_factor);
+  Serial.println();
+
+  // Update OLED with current measurement
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+  display.setCursor(0, 0);
+  display.println("HX711 Scale");
+
+  // Second line: WiFi connection status and IP
+  display.setCursor(0, 8);
+  if (WiFi.status() == WL_CONNECTED) {
+    display.print("WiFi ");
+    display.print(WiFi.localIP());
+  } else {
+    display.print("WiFi DISCONNECTED");
+  }
+
+  // Weight on third line, larger font
+  display.setTextSize(2);
+  display.setCursor(0, 16);
+  display.print(weight, 1);
+  display.print(" g");
+  display.display();
+
+  // Send measurement over UDP: "<millis>,<weight>"
+  if (WiFi.status() == WL_CONNECTED) {
+    unsigned long timestampMs = millis();
+    char payload[64];
+    snprintf(payload, sizeof(payload), "%lu,%.2f", timestampMs, weight);
+
+    udp.beginPacket(udpBroadcastIp, UDP_REMOTE_PORT);
+    udp.write((uint8_t*)payload, strlen(payload));
+    udp.endPacket();
+  }
+
+  if(Serial.available())
+  {
+    char temp = Serial.read();
+    if(temp == '+' || temp == 'a')
+      calibration_factor += 10;
+    else if(temp == '-' || temp == 'z')
+      calibration_factor -= 10;
+    else if(temp == 't' || temp == 'T')
+      scale.tare();
+  }
+}
