@@ -33,11 +33,11 @@ HX711 scale;
 float calibration_factor = -1820; // This value is obtained by calibration
 
 // WiFi and UDP settings
-// const char* WIFI_SSID     = "UPB_RoboSub";      // TODO: set your WiFi SSID
-// const char* WIFI_PASSWORD = "amasd2025";  // TODO: set your WiFi password
+const char* WIFI_SSID     = "UPB_RoboSub";      // TODO: set your WiFi SSID
+const char* WIFI_PASSWORD = "amasd2025";  // TODO: set your WiFi password
 
-const char* WIFI_SSID     = "TP_Cabanota";      // TODO: set your WiFi SSID
-const char* WIFI_PASSWORD = "Wsx12345678";  // TODO: set your WiFi password
+// const char* WIFI_SSID     = "TP_Cabanota";      // TODO: set your WiFi SSID
+// const char* WIFI_PASSWORD = "Wsx12345678";  // TODO: set your WiFi password
 
 
 // HTTP server on port 80
