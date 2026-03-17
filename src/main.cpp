@@ -12,6 +12,9 @@ const int LOADCELL_SCK_PIN = 26;
 // Firebeetle ESP32 built-in LED is on GPIO 2
 const int STATUS_LED_PIN = 2;
 
+// Tare pushbutton on FireBeetle ESP32 (active LOW with INPUT_PULLUP)
+const int TARE_BUTTON_PIN = 4;
+
 // OLED 0.91" (128x32) I2C display
 const int SCREEN_WIDTH = 128;
 const int SCREEN_HEIGHT = 32;
@@ -25,8 +28,12 @@ HX711 scale;
 float calibration_factor = -1820; // This value is obtained by calibration
 
 // WiFi and UDP settings
-const char* WIFI_SSID     = "UPB_RoboSub";      // TODO: set your WiFi SSID
-const char* WIFI_PASSWORD = "amasd2025";  // TODO: set your WiFi password
+// const char* WIFI_SSID     = "UPB_RoboSub";      // TODO: set your WiFi SSID
+// const char* WIFI_PASSWORD = "amasd2025";  // TODO: set your WiFi password
+
+const char* WIFI_SSID     = "TP_Cabanota";      // TODO: set your WiFi SSID
+const char* WIFI_PASSWORD = "Wsx12345678";  // TODO: set your WiFi password
+
 
 // Remote host for UDP monitoring (PC or server IP)
 const char* UDP_REMOTE_IP = "10.38.24.100";  // TODO: set receiver IP
@@ -40,6 +47,15 @@ unsigned long previousBlinkMillis = 0;
 const unsigned long blinkIntervalMs = 500;
 bool statusLedState = false;
 
+// Debounce state for tare button
+const unsigned long tareDebounceMs = 40;
+bool tareButtonStableState = HIGH;
+bool tareButtonLastReading = HIGH;
+unsigned long tareButtonLastChangeMs = 0;
+
+// Keep tare confirmation message on OLED for 1 second
+unsigned long tareMessageUntilMs = 0;
+
 void setup() {
   Serial.begin(115200);
   Serial.println("HX711 calibration sketch");
@@ -48,9 +64,11 @@ void setup() {
   Serial.println("Press + or a to increase calibration factor");
   Serial.println("Press - or z to decrease calibration factor");
   Serial.println("Press t or T to tare");
+  Serial.println("Press TARE button (GPIO4 -> GND) to tare");
 
   pinMode(STATUS_LED_PIN, OUTPUT);
   digitalWrite(STATUS_LED_PIN, LOW);
+  pinMode(TARE_BUTTON_PIN, INPUT_PULLUP);
 
   // Initialize OLED display over I2C
   if (!display.begin(SSD1306_SWITCHCAPVCC, OLED_I2C_ADDRESS)) {
@@ -116,6 +134,22 @@ void loop() {
     digitalWrite(STATUS_LED_PIN, statusLedState ? HIGH : LOW);
   }
 
+  // Non-blocking button debounce and tare on press
+  bool tareReading = digitalRead(TARE_BUTTON_PIN);
+  if (tareReading != tareButtonLastReading) {
+    tareButtonLastChangeMs = currentMillis;
+    tareButtonLastReading = tareReading;
+  }
+
+  if ((currentMillis - tareButtonLastChangeMs) > tareDebounceMs && tareReading != tareButtonStableState) {
+    tareButtonStableState = tareReading;
+    if (tareButtonStableState == LOW) {
+      scale.tare();
+      tareMessageUntilMs = currentMillis + 1000;
+      Serial.println("Tare by button");
+    }
+  }
+
   scale.set_scale(calibration_factor); //Adjust to this calibration factor
 
   float weight = scale.get_units(5); // average of 5 readings
@@ -127,27 +161,35 @@ void loop() {
   Serial.print(calibration_factor);
   Serial.println();
 
-  // Update OLED with current measurement
+  // Update OLED with current measurement, or tare confirmation message
   display.clearDisplay();
-  display.setTextSize(1);
   display.setTextColor(SSD1306_WHITE);
-  display.setCursor(0, 0);
-  display.println("HX711 Scale");
 
-  // Second line: WiFi connection status and IP
-  display.setCursor(0, 8);
-  if (WiFi.status() == WL_CONNECTED) {
-    display.print("WiFi ");
-    display.print(WiFi.localIP());
+  if (currentMillis < tareMessageUntilMs) {
+    display.setTextSize(2);
+    display.setCursor(16, 8);
+    display.print("TARE OK");
   } else {
-    display.print("WiFi DISCONNECTED");
+    display.setTextSize(1);
+    display.setCursor(0, 0);
+    display.println("HX711 Scale");
+
+    // Second line: WiFi connection status and IP
+    display.setCursor(0, 8);
+    if (WiFi.status() == WL_CONNECTED) {
+      display.print("WiFi ");
+      display.print(WiFi.localIP());
+    } else {
+      display.print("WiFi DISCONNECTED");
+    }
+
+    // Weight on third line, larger font
+    display.setTextSize(2);
+    display.setCursor(0, 16);
+    display.print(weight, 1);
+    display.print(" g");
   }
 
-  // Weight on third line, larger font
-  display.setTextSize(2);
-  display.setCursor(0, 16);
-  display.print(weight, 1);
-  display.print(" g");
   display.display();
 
   // Send measurement over UDP: "<millis>,<weight>"
@@ -169,6 +211,10 @@ void loop() {
     else if(temp == '-' || temp == 'z')
       calibration_factor -= 10;
     else if(temp == 't' || temp == 'T')
+    {
       scale.tare();
+      tareMessageUntilMs = currentMillis + 1000;
+      Serial.println("Tare by serial");
+    }
   }
 }
